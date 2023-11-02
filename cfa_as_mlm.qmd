@@ -1,0 +1,359 @@
+---
+title: "CFA como modelo mixto"
+subtitle: "Ajustando un CFA para obtener resultados de un MLM"
+toc: true
+toc-expand: true
+toc-title: Contenidos
+author:
+  - name: https://dacarras.github.io/
+    affiliations:
+    - name: Centro de Medición MIDE UC, Pontificia Universidad Católica de Chile
+format:
+  html:
+    code-overflow: wrap
+    code-line-numbers: true
+    code-annotations: below
+    code-link: true
+    embed-resources: true
+    grid:
+      margin-width: 400px
+css: output_background_color_style.css
+mainfont: Noto Sans
+monofont: Source Code Pro
+---
+
+```{r, echo = FALSE, eval = TRUE}
+
+# hide messages from dplyr
+suppressPackageStartupMessages(library(dplyr))
+
+# hide NA from knitr table
+options(knitr.kable.NA = '')
+
+# suppress dplyr group warnings
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+
+# Resumen
+
+- Simulamos datos multinivel con componentes de varianza de $\sigma^2_{w} = .1$ y $\sigma^2_{b} = .9$, y con media cero. Generamos datos para 500 clusters, con 5 observaciones para cada cluster, dando un total de 25000 observaciones. Estos datos, se pueden bajar del siguiente [link](https://github.com/dacarras/edu4046_cfa/raw/main/data_long.rds).
+
+- Cada cluster lo simbolizamos con la letra _j_, y a cada observación con la letra _i_.
+
+- Los datos generados se encuentran en formato *stacked* o *long*, donde cada fila es una observación, indexada en un cluster. Estos datos los *volteamos*, para producir una representación de las mismas observaciones en formato *wide* o hacia el lado. En este caso, se emplean 5 columnas (i1-i5) para alojar los valores de cada observación por cada cluter *j*.
+
+- Empleando a la libreria `lavaan`, ilustramos como ajustar un modelo MLM sobre los datos en stacked, y ajustamos un modelo CFA sobre los datos en wide, recuperando los mismos resultados en cada caso, hasta a dos decimales.
+
+# Flujo de trabajo
+
+- 1. Datos simulados
+- 2. Preparar los datos
+- 3. Ajustar Modelos
+- 4. Tabla comparada de resultados
+
+# 1. Datos Simulados
+
+$$y_{ij} = \gamma_{00} + \mu_{0j} + \epsilon_{ij}$$
+
+Donde,
+
+- $y_{ij}$ = respuesta $y$ para la observación $_{i}$, en el cluster $_{j}$
+- $\gamma_{00}$ = media entre todos los clusters
+- $\mu_{0j}$ = desviaciones de las medias de los clusters, a la gran media $\gamma_{00}$
+- $\epsilon_{ij}$ = desviación de las observaciones con respecto a la media de su propio cluster
+- $\mu_{0j}  \sim \mathcal{N}(0,\,\sigma^{2}_{b})$ = donde $\mu_{0j}$ es variable de media cero, y varianza $\sigma^{2}_{b}$
+- $\sigma^{2}_{b}$ = .9
+- $\epsilon_{0j}  \sim \mathcal{N}(0,\,\sigma^{2}_{w})$ = donde $\epsilon_{ij}$ es variable de media cero, y varianza $\sigma^{2}_{w}$
+- $\sigma^{2}_{w}$ = .1
+- $_{j}$ = 500 clusters
+- $_{i}$ = 5 observaciones para cada cluster
+
+Datos simulados:
+
+- [data_long.rds](https://github.com/dacarras/edu4046_cfa/raw/main/data_long.rds)
+
+::: {.callout-note title="Nota"}
+Los datos simulados fueron generados empleando al software Mplus (ver Anexo).
+:::
+
+
+# 2. Preparar datos
+
+Abrimos los datos simulados, y generamos los datos en formato wide
+
+```{r , echo=TRUE, eval = TRUE}
+
+
+# ubicación de los datos en url
+url_file_long <- url('https://github.com/dacarras/edu4046_cfa/raw/main/data_long.rds')
+
+# datos en formato stacked
+data_long <- readRDS(url_file_long)
+
+# datos en formato wide
+data_wide <- data_long %>%
+             mutate(id_ij = paste0('i',rep(seq(1:5),500))) %>%
+             tidyr::pivot_wider(
+              id_cols = -id_i,
+              names_from = 'id_ij', 
+              values_from = 'y') %>%
+             dplyr::glimpse()
+
+```
+
+Cómo se ven los datos generados, y los datos en formato *wide*, para los 4 primeros clusters.
+
+```{r , echo=TRUE, eval = TRUE}
+
+# datos en formato stacked
+data_long %>%
+dplyr::slice(1:20) %>%
+knitr::kable(., digits = 4)
+
+# datos en formato wide
+data_wide %>%
+dplyr::slice(1:4) %>%
+knitr::kable(., digits = 4)
+
+```
+
+# 3. Ajustar modelos
+
+## 3.1 Modelo MLM tradicional
+
+Empleamos la función `lme4::lmer()` para ajustar un modelo multinivel de tipo nulo, sobre los datos `data_long.rds`.
+
+```{r , echo=TRUE, eval = TRUE}
+
+# ----------------------------------------------- 
+# method 1: lem4::lmer()
+# -----------------------------------------------
+
+fit_null <- lme4::lmer(y ~ 1 + (1|id_j), data = data_long, REML = FALSE)
+summary(fit_null)
+
+```
+
+## 3.2 Modelo MLM en lavaan
+
+Empleamos la función `lavaan::sem()` para ajustar un modelo multinivel de tipo nulo, sobre los datos `data_long.rds`.
+
+```{r , echo=TRUE, eval = TRUE}
+
+# ----------------------------------------------- 
+# method 2: lavaan::sem()
+# -----------------------------------------------
+
+lavaan_mlm <- '
+level: 1
+# variance w
+y~~w*y
+
+level: 2
+# variance b
+y~~b*y
+
+y~mu*1
+
+# model terms
+y00   := mu
+var_w := w
+var_b := b
+icc   := b/(b+w)
+
+'
+
+fit_mlm <- lavaan::sem(model = lavaan_mlm, 
+           data = data_long, 
+           cluster = "id_j"
+           )
+
+summary(fit_mlm)
+
+lavaan::parameterEstimates(fit_mlm) %>%
+dplyr::filter(op == ':=') %>%
+dplyr::filter(label %in% c('y00','var_w','var_b','icc')) %>%
+dplyr::select(label, est, se) %>%
+knitr::kable(., digits = 3)
+
+```
+
+## 3.2 Modelo MLM por medio de un modelo CFA
+
+Empleamos la función `lavaan::sem()` para ajustar un modelo multinivel de tipo nulo a través de un modelo CFA, sobre los datos `data_wide`.
+
+
+```{r , echo=TRUE, eval = TRUE}
+
+# ----------------------------------------------- 
+# method 3: lavaan::sem()
+# -----------------------------------------------
+
+lavaan_cfa <- '
+# random term
+eta =~ 1*i1 
+eta =~ 1*i2 
+eta =~ 1*i3 
+eta =~ 1*i4 
+eta =~ 1*i5 
+
+# latent mean
+eta ~ mu*1
+
+# person intercepts
+i1  ~ d1 *1
+i2  ~ d2 *1
+i3  ~ d3 *1
+i4  ~ d4 *1
+i5  ~ d5 *1
+
+# variance
+eta~~b*eta
+
+# residual variance
+i1 ~~ w*i1
+i2 ~~ w*i2
+i3 ~~ w*i3
+i4 ~~ w*i4
+i5 ~~ w*i5
+
+# model constraints
+
+cw := (d1 +d2 +d3 +d4 +d5)/5
+
+cw == 0
+
+# model terms
+y00   := mu
+var_w := w
+var_b := b
+icc   := b/(b+w)
+
+
+'
+
+fit_cfa <- lavaan::sem(model = lavaan_cfa, 
+           data = data_wide
+           )
+
+summary(fit_cfa)
+
+lavaan::parameterEstimates(fit_cfa) %>%
+dplyr::filter(op == ':=') %>%
+dplyr::filter(label %in% c('y00','var_w','var_b','icc')) %>%
+dplyr::select(label, est, se) %>%
+knitr::kable(., digits = 3)
+
+```
+
+
+# 4. Tabla comparada de resultados
+
+## 4.1 Extraer los estimados de cada modelo ajustado
+
+```{r , echo=TRUE, eval = TRUE}
+
+# ----------------------------------------------- 
+# retrive estimates
+# -----------------------------------------------
+
+# function to adjust to two decimal places
+decimal <- function (x, k) {
+    format(round(x, k), nsmall = k)
+}
+
+# lmer4::lmer()
+table_est_1 <- broom.mixed::tidy(fit_null) %>%
+mutate(label = c('y00','var_b', 'var_w')) %>%
+mutate(est = case_when(
+effect == 'fixed'    ~ estimate,
+effect == 'ran_pars' ~ estimate*estimate
+)) %>%
+mutate(est_1_se = paste0(decimal(est, 2), ' (', decimal(std.error,2), ')')) %>%
+dplyr::select(label, est_1_se)
+
+# lavaan mlm
+table_est_2 <- lavaan::parameterEstimates(fit_mlm) %>%
+dplyr::filter(op == ':=') %>%
+dplyr::filter(label %in% c('y00','var_w','var_b','icc')) %>%
+mutate(est_2_se = paste0(decimal(est, 2), ' (', decimal(se,2), ')')) %>%
+dplyr::select(label, est_2_se) 
+
+# lavaan cfa
+table_est_3 <- lavaan::parameterEstimates(fit_cfa) %>%
+dplyr::filter(op == ':=') %>%
+dplyr::filter(label %in% c('y00','var_w','var_b','icc')) %>%
+mutate(est_3_se = paste0(decimal(est, 2), ' (', decimal(se,2), ')')) %>%
+dplyr::select(label, est_3_se) 
+
+```
+## 4.2 Tabla comparada
+
+```{r , echo=TRUE, eval = TRUE}
+
+
+# ----------------------------------------------- 
+# display table comparison
+# -----------------------------------------------
+
+dplyr::full_join(table_est_1, table_est_2, by = 'label') %>%
+dplyr::full_join(., table_est_3, by = 'label') %>%
+rename(
+`lme4::lmer()` = 2,
+`lavaan::sem()-MLM` = 3,
+`lavaan::sem()-CFA` = 4
+) %>%
+knitr::kable()
+
+```
+# Anexos
+
+## Código Mplus para generar los datos simulados
+
+```text
+TITLE:
+null mlm;
+
+MONTECARLO:
+ 
+NAMES         = y;       
+NOBSERVATIONS = 2500;    
+NCSIZES       = 1;       
+CSIZES        = 500 (5); 
+NREPS         = 1;       
+SEED          = 4046;    
+SAVE          = icc_90.dat;
+
+MODEL POPULATION:
+ 
+%WITHIN%                 
+!residual variance       
+y*0.1;
+
+%BETWEEN%               
+!latent mean            
+[y@0];                  
+y*0.9;
+
+ANALYSIS:
+
+TYPE = TWOLEVEL;
+ESTIMATOR = ML;
+
+MODEL:
+ 
+%WITHIN%                 
+!residual variance       
+y*0.1;
+
+%BETWEEN%               
+!latent mean            
+[y@0];                  
+y*0.9;
+
+OUTPUT:
+TECH9;
+
+```
